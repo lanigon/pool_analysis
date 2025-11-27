@@ -32,6 +32,12 @@ This project studies real-world arbitrage activity between PancakeSwap V3 on BSC
 - Aggregate 10-second windows to find periods where both chains show volume; compute symmetry and duration metrics for these cross-chain bursts.
 - Deep-dive on frequent arbitrageurs (e.g., address `0x43f9a7aec2a683c4cd6016f92ff76d5f3e7b44d3`): report gap distributions, tick movements, signed volume, scatter plots, and descriptive stats.
 
+### Generated Visuals (`insights/view/`)
+
+- `daily_volume_breakdown.png` – daily-side-by-side volume comparison for Base vs BSC flows.
+- `gap_vs_volume_0x43f9a7ae.png` – gap vs. trade-size scatter for address `0x43f9a7aec2a...`.
+- `spread_persistence_duration.png` – relationship between spread size and how long it persists before reverting.
+
 ## What We Learned
 
 - BSC/Base spreads exist but decay rapidly—typically ~10 seconds before arbitrage collapses the gap.

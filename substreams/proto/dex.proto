@@ -1,0 +1,67 @@
+syntax = "proto3";
+
+package lindenshore.dex;
+
+message RawSwap {
+  string dex = 1;
+  string chain = 2;
+  string pool_address = 3;
+  string tx_hash = 4;
+  string sender = 5;
+  string recipient = 6;
+  string amount0 = 7;
+  string amount1 = 8;
+  string sqrt_price_x96 = 9;
+  string liquidity = 10;
+  sint64 tick = 11;
+  uint64 block_number = 12;
+  string block_hash = 13;
+  uint64 block_timestamp = 14;
+  uint32 log_index = 15;
+  uint64 ordinal = 16;
+  string fee_ratio = 17;
+  reserved 18;
+  string gas_price = 19;
+  uint64 gas_used = 20;
+  string gas_fee = 21;
+}
+
+message RawSwaps {
+  repeated RawSwap swaps = 1;
+}
+
+message PoolState {
+  string sqrt_price_x96 = 1;
+  string liquidity = 2;
+  sint64 tick = 3;
+}
+
+message SwapRecord {
+  string dex = 1;
+  string chain = 2;
+  string pool_address = 3;
+  string tx_hash = 4;
+  string sender = 5;
+  string recipient = 6;
+  string amount0 = 7;
+  string amount1 = 8;
+  string pre_sqrt_price_x96 = 9;
+  string post_sqrt_price_x96 = 10;
+  string pre_liquidity = 11;
+  string post_liquidity = 12;
+  sint64 pre_tick = 13;
+  sint64 post_tick = 14;
+  uint64 block_number = 15;
+  string block_hash = 16;
+  uint64 block_timestamp = 17;
+  uint32 log_index = 18;
+  string fee_ratio = 19;
+  reserved 20;
+  string gas_price = 21;
+  uint64 gas_used = 22;
+  string gas_fee = 23;
+}
+
+message SwapRecords {
+  repeated SwapRecord records = 1;
+}

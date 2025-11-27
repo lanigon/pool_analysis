@@ -1,0 +1,38 @@
+specVersion: v0.1.0
+package:
+  name: lindenshore-clmm
+  version: v0.1.0
+  doc: Stream PancakeSwap V3 & Aerodrome CLMM swap data for specific pools
+
+modules:
+  - name: map_pancake_swaps
+    kind: map
+    initialBlock: 69_489_653
+    inputs:
+      - params: string
+      - source: sf.ethereum.type.v2.Block
+    output:
+      type: proto:lindenshore.dex.RawSwaps
+
+  - name: map_pancake_swaps_enriched
+    kind: map
+    initialBlock: 69_459_653
+    inputs:
+      - map: map_pancake_swaps
+      - source: sf.ethereum.type.v2.Block
+    output:
+      type: proto:lindenshore.dex.SwapRecords
+
+  - name: map_aerodrome_swaps
+    kind: map
+    initialBlock: 38_658_472
+    inputs:
+      - params: string
+      - source: sf.ethereum.type.v2.Block
+    output:
+      type: proto:lindenshore.dex.RawSwaps
+
+binaries:
+  default:
+    type: wasm/rust-v1
+    file: target/wasm32-unknown-unknown/release/lindenshore_substreams.wasm

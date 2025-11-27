@@ -1,0 +1,11 @@
+.env
+substreams/.substreams.env
+.venv
+data
+substreams/target
+substreams/target2
+substreams/relay.log
+substreams/tmp
+substreams/log.txt
+target
+base_mev

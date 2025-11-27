@@ -1,0 +1,51 @@
+[package]
+name = "substreams"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "lindenshore_substreams"
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "fetch_data"
+path = "src/bin/fetch_data.rs"
+required-features = ["native"]
+
+[[bin]]
+name = "fetch_pool"
+path = "src/bin/fetch_pool.rs"
+required-features = ["native"]
+
+[[bin]]
+name = "initial_db"
+path = "src/bin/initial_db.rs"
+required-features = ["native"]
+
+[features]
+default = []
+native = ["tokio", "sea-orm", "clap", "alloy", "url"]
+
+[dependencies]
+anyhow = "1"
+ethabi = "18"
+hex = "0.4"
+once_cell = "1"
+num-bigint = "0.4"
+num-traits = "0.2"
+prost = "0.11"
+base64 = "0.21"
+substreams = "0.5"
+substreams-ethereum = "0.9"
+tiny-keccak = { version = "2", features = ["keccak"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"], optional = true }
+sea-orm = { version = "0.12", default-features = false, features = ["macros", "runtime-tokio-rustls", "sqlx-sqlite"], optional = true }
+clap = { version = "4", features = ["derive"], optional = true }
+alloy = { version = "0.7", features = ["full"], optional = true }
+url = { version = "2", optional = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.3", default-features = false, features = ["wasm_js"] }
+
+[build-dependencies]
+prost-build = "0.11"

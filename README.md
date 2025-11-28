@@ -41,6 +41,7 @@ This project studies real-world arbitrage activity between PancakeSwap V3 on BSC
 
 - BSC/Base spreads exist but decay rapidly—typically ~10 seconds before arbitrage collapses the gap.
 - Some wallets act like market makers, firing continuously when spreads appear; even with tiny tick impacts per trade, they maintain balanced signed volume as gaps emerge.
+- Cross-chain match windows are rare (~2% of 10-second buckets), so most opportunities either disappear before both chains can trade or are too slim to cover gas.
 
 ## Why This Matters
 

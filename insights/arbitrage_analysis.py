@@ -248,21 +248,85 @@ def same_timestamp_gas_priority(df: pd.DataFrame) -> float:
     return ratio_count / ratio_total if ratio_total else 0.0
 
 
+def attach_chain_reference(
+    source: pd.DataFrame, reference: pd.DataFrame
+) -> pd.DataFrame:
+    """Match each source trade with the most recent reference-chain price."""
+    ref_sorted = reference[["timestamp", "price"]].sort_values("timestamp")
+    src_sorted = source.sort_values(
+        ["timestamp", "block_number", "log_index"], ascending=True
+    )
+    merged = pd.merge_asof(
+        src_sorted,
+        ref_sorted.rename(columns={"price": "ref_price"}),
+        on="timestamp",
+        direction="backward",
+    )
+    return merged
+
+
+def analyze_pool_spread(df: pd.DataFrame) -> pd.DataFrame:
+    """Summarize how the two pools drift apart before flagging arbitrage trades."""
+    bsc_df = df[df["chain"] == "bsc"]
+    base_df = df[df["chain"] == "base"]
+    if bsc_df.empty or base_df.empty:
+        print("\nInsufficient data to compare BSC and Base pool prices.")
+        return pd.DataFrame()
+
+    bsc_ref = attach_chain_reference(bsc_df, base_df)
+    base_ref = attach_chain_reference(base_df, bsc_df)
+    spread_df = (
+        pd.concat([bsc_ref, base_ref], ignore_index=True)
+        .sort_values(["timestamp", "block_number", "log_index"], ascending=True)
+        .reset_index(drop=True)
+    )
+    spread_df["ref_price"] = spread_df["ref_price"].ffill()
+    spread_df["price_float"] = spread_df["price"].astype(float)
+    spread_df["ref_float"] = spread_df["ref_price"].astype(float)
+    spread_df["spread_pct"] = (
+        (spread_df["price_float"] - spread_df["ref_float"])
+        / spread_df["ref_float"].replace(0, np.nan)
+    )
+    summary = (
+        spread_df.groupby("chain")
+        .agg(
+            trades=("tx_hash", "count"),
+            mean_spread=("spread_pct", "mean"),
+            median_spread=("spread_pct", "median"),
+            positive_spreads=("spread_pct", lambda x: (x > 0).sum()),
+            negative_spreads=("spread_pct", lambda x: (x < 0).sum()),
+        )
+        .reset_index()
+    )
+    summary["positive_ratio"] = summary["positive_spreads"] / summary["trades"].replace(
+        0, 1
+    )
+    print("\nPool price spread overview:")
+    print(summary.to_string(index=False, float_format="{:.4f}".format))
+    high_spread = spread_df[spread_df["spread_pct"].abs() > 0.0005]
+    if not high_spread.empty:
+        chain_counts = high_spread.groupby("chain")["tx_hash"].count().rename("large_spread_trades")
+        by_chain = chain_counts.reset_index()
+        print(f"\nHigh-spread trades (>0.05%): {len(high_spread)} total")
+        print(
+            by_chain.to_string(
+                index=False,
+                float_format="{:,.0f}".format,
+            )
+        )
+        print("\nSample high-spread trades:")
+        print(
+            high_spread[
+                ["timestamp", "chain", "tx_hash", "price", "ref_price", "spread_pct"]
+            ]
+            .head(5)
+            .to_string(index=False, float_format="{:,.4f}".format)
+        )
+    return summary
+
+
 def analyze_arbitrage_trades(full_df: pd.DataFrame) -> pd.DataFrame:
     """Identify cross-chain arbitrage trades event-by-event and estimate revenue."""
-
-    def _attach_reference(source: pd.DataFrame, reference: pd.DataFrame) -> pd.DataFrame:
-        ref_sorted = reference[["timestamp", "price"]].sort_values("timestamp")
-        src_sorted = source.sort_values(
-            ["timestamp", "block_number", "log_index"], ascending=True
-        )
-        merged = pd.merge_asof(
-            src_sorted,
-            ref_sorted.rename(columns={"price": "ref_price"}),
-            on="timestamp",
-            direction="backward",
-        )
-        return merged
 
     sorted_df = full_df.sort_values(
         ["timestamp", "block_number", "log_index"], ascending=True
@@ -270,8 +334,8 @@ def analyze_arbitrage_trades(full_df: pd.DataFrame) -> pd.DataFrame:
     bsc_df = sorted_df[sorted_df["chain"] == "bsc"]
     base_df = sorted_df[sorted_df["chain"] == "base"]
 
-    bsc_ref = _attach_reference(bsc_df, base_df)
-    base_ref = _attach_reference(base_df, bsc_df)
+    bsc_ref = attach_chain_reference(bsc_df, base_df)
+    base_ref = attach_chain_reference(base_df, bsc_df)
 
     combined = (
         pd.concat([bsc_ref, base_ref], ignore_index=True)
@@ -402,6 +466,104 @@ def _aggregate_windows(df: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame()
 
     return pd.DataFrame(events)
+
+
+def strict_cross_chain_trade_groups(df: pd.DataFrame, threshold: float = 0.0005) -> pd.DataFrame:
+    """Return windows where both sides trade and each leg meets the opposite-price condition."""
+    events = _aggregate_windows(df)
+    if events.empty:
+        return pd.DataFrame()
+
+    arb = df[df["is_arb_trade"]].copy()
+    strict_records = []
+    event_index = events.set_index("window")
+
+    for window in events["window"].unique():
+        window_trades = arb[arb["window"] == window]
+        if window_trades.empty:
+            continue
+        bsc_sell = window_trades[
+            (window_trades["chain"] == "bsc") & (window_trades["side"] == "sell")
+        ]
+        base_buy = window_trades[
+            (window_trades["chain"] == "base") & (window_trades["side"] == "buy")
+        ]
+        base_sell = window_trades[
+            (window_trades["chain"] == "base") & (window_trades["side"] == "sell")
+        ]
+        bsc_buy = window_trades[
+            (window_trades["chain"] == "bsc") & (window_trades["side"] == "buy")
+        ]
+
+        sell_buy_match = (
+            not bsc_sell.empty
+            and not base_buy.empty
+            and (bsc_sell["spread_pct"] > threshold).any()
+            and (base_buy["spread_pct"] < -threshold).any()
+        )
+        buy_sell_match = (
+            not base_sell.empty
+            and not bsc_buy.empty
+            and (base_sell["spread_pct"] > threshold).any()
+            and (bsc_buy["spread_pct"] < -threshold).any()
+        )
+
+        if not (sell_buy_match or buy_sell_match):
+            continue
+
+        direction = "sell>buy" if sell_buy_match else "buy>sell"
+        summary = window_trades.groupby(["chain", "side"]).size()
+        strict_records.append(
+            {
+                "window": window,
+                "pair_type": direction,
+                "tx_count": len(window_trades),
+                "total_net_profit": float(window_trades["net_profit"].sum()),
+                "symmetry_ratio": float(event_index.at[window, "symmetry_ratio"])
+                if window in event_index.index
+                else 0.0,
+                "avg_spread_pct": float(window_trades["spread_pct"].mean()),
+                "bsc_sell_count": int(summary.get(("bsc", "sell"), 0)),
+                "base_buy_count": int(summary.get(("base", "buy"), 0)),
+                "base_sell_count": int(summary.get(("base", "sell"), 0)),
+                "bsc_buy_count": int(summary.get(("bsc", "buy"), 0)),
+                "tx_hashes": window_trades["tx_hash"].tolist(),
+            }
+        )
+
+    return pd.DataFrame(strict_records)
+
+
+def print_strict_cross_chain_groups(df: pd.DataFrame, limit: int = 3) -> None:
+    groups = strict_cross_chain_trade_groups(df)
+    if groups.empty:
+        return
+    groups = groups.sort_values("total_net_profit", ascending=False).reset_index(drop=True)
+    print("\nStrict cross-chain groups (opposite-sides that satisfy all price constraints):")
+    print(
+        groups[["window", "pair_type", "tx_count", "total_net_profit", "symmetry_ratio", "avg_spread_pct"]]
+        .head(limit)
+        .to_string(
+            index=False,
+            float_format="{:,.4f}".format,
+        )
+    )
+    for _, row in groups.head(limit).iterrows():
+        group_trades = df[
+            (df["window"] == row["window"]) & df["is_arb_trade"]
+        ].sort_values(["chain", "side", "timestamp"])
+        if group_trades.empty:
+            continue
+        print(f"\nWindow {row['window']} trades (pair_type={row['pair_type']}):")
+        preview = group_trades[
+            ["timestamp", "chain", "side", "tx_hash", "price", "ref_price", "spread_pct", "net_profit"]
+        ].head(10)
+        print(
+            preview.to_string(
+                index=False,
+                float_format=lambda x: f"{x:,.6f}",
+            )
+        )
 
 
 def cross_chain_match_ratio(df: pd.DataFrame) -> float:
@@ -565,6 +727,25 @@ def describe_sender_tick_movement(sender_history: pd.DataFrame, sender_address: 
     )
 
 
+def summarize_sender_profitability(sender_history: pd.DataFrame) -> dict:
+    if sender_history.empty:
+        return {}
+    hist = sender_history.copy()
+    hist["profitable_if_reverse"] = (
+        ((hist["side"] == "sell") & (hist["next_bsc_return"] > 0))
+        | ((hist["side"] == "buy") & (hist["next_bsc_return"] < 0))
+    )
+    total = len(hist)
+    win = int(hist["profitable_if_reverse"].sum())
+    avg_flip = hist["next_bsc_return"].mean()
+    return {
+        "total_trades": total,
+        "profitable_if_reverse": win,
+        "profitable_ratio": win / total if total else 0.0,
+        "avg_next_bsc_return": avg_flip,
+    }
+
+
 def plot_sender_gap_vs_volume(sender_history: pd.DataFrame, sender_address: str) -> None:
     if sender_history.empty or "price_gap_pct" not in sender_history.columns:
         return
@@ -626,10 +807,34 @@ def match_cross_chain_events(df: pd.DataFrame, top_n: int = 10) -> pd.DataFrame:
     )
 
 
+def detect_price_anomalies(
+    df: pd.DataFrame, suspect_price: float = 2954.226369, tol: float = 1e-9
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Flag and drop trades whose price hits the known bad number.
+    """
+    mask = np.isclose(df["price"], suspect_price, atol=tol)
+    anomalies = df[mask].copy()
+    if not anomalies.empty:
+        print(
+            f"\nDetected {len(anomalies)} trades at price {suspect_price}:"
+        )
+        print(
+            anomalies[
+                ["timestamp", "chain", "price", "ref_price", "spread_pct", "tx_hash"]
+            ]
+            .to_string(index=False, float_format="{:,.6f}".format)
+        )
+    return df[~mask].copy(), anomalies
+
+
+
 
 def main() -> None:
     df = load_transactions(DB_PATH)
+    analyze_pool_spread(df)
     analyzed = analyze_arbitrage_trades(df)
+    analyzed, _ = detect_price_anomalies(analyzed)
     competitors = identify_competitors(analyzed)
     print(f"Detected {len(competitors)} competitors.")
     print_leaderboard(competitors)
@@ -689,6 +894,11 @@ def main() -> None:
             )
         )
     events = match_cross_chain_events(analyzed)
+    if not events.empty:
+        print(
+            f"\nMatched cross-chain windows: {len(events)} windows, "
+            f"{events['window'].nunique()} unique 10s buckets."
+        )
     balanced = events[events["symmetry_ratio"] < 0.3].sort_values(
         "total_net_profit", ascending=False
     )
@@ -730,6 +940,8 @@ def main() -> None:
             )
         )
 
+    print_strict_cross_chain_groups(analyzed)
+
     target_sender = "0x43f9a7aec2a683c4cd6016f92ff76d5f3e7b44d3"
     spread_origin = summarize_spread_origins(analyzed, target_sender)
     if spread_origin:
@@ -751,6 +963,13 @@ def main() -> None:
         )
         describe_sender_tick_movement(sender_history, target_sender)
         plot_sender_gap_vs_volume(sender_history, target_sender)
+        profit_stats = summarize_sender_profitability(sender_history)
+        if profit_stats:
+            print(
+                f"\nPotentially profitable reverse BSC trades: {profit_stats['profitable_if_reverse']} / "
+                f"{profit_stats['total_trades']} ({profit_stats['profitable_ratio']:.1%}), "
+                f"avg next BSC return {profit_stats['avg_next_bsc_return']:.4f}"
+            )
 
 
 if __name__ == "__main__":

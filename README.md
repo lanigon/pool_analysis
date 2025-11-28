@@ -11,14 +11,12 @@ This project studies real-world arbitrage activity between PancakeSwap V3 on BSC
    ```
    (or trigger the equivalent Substreams CLI pipeline) to seed `data/dex.db`, `data/chains.db`, `data/pools.db`, and `data/transactions.db`.
 3. **Stream live data**: use the Substreams CLI to capture Aerodrome (Base) and PancakeSwap (BSC) ETH/USDC|USDT pool events, writing swaps, ticks, gas, and metadata into the SQLite files above.
-4. **Set up Python tooling**: activate a virtualenv at the repo root and install `insights/requirements.txt` (includes pandas, SQLAlchemy, matplotlib, seaborn, etc.).
+4. **Set up Python tooling**: activate the repo’s virtualenv and install `insights/requirements.txt` (includes pandas, SQLAlchemy, matplotlib, seaborn, etc.).
 5. **Run the analytics**:
    ```bash
    python -m insights.arbitrage_analysis
-   # or
-   python insights/arbitrage_analysis.py
    ```
-   The script loads every recorded transaction, performs cross-chain spread/arbitrage analysis, and saves plots under `insights/view/`.
+   The script now first compares the two pools’ spread trajectories (reporting ≥0.05% deviations), then marks individual trend-following arbitrage trades, aggregates them into competitor/arb-sender leaderboards, matches dual-chain windows, and prints address-level summaries before persisting charts under `insights/view/`.
 
 ## Data Pipeline
 
@@ -27,10 +25,11 @@ This project studies real-world arbitrage activity between PancakeSwap V3 on BSC
 
 ## Analysis Highlights
 
-- Sort swaps chronologically across chains, continuously align each trade with the latest price from the opposite chain via `pd.merge_asof(direction="backward")`.
-- Apply a 0.05% spread threshold; classify buys/sells as real cross-chain arbitrage by computing `spread_pct`, `revenue`, `gas_fee_usd`, and `net_profit`.
-- Aggregate 10-second windows to find periods where both chains show volume; compute symmetry and duration metrics for these cross-chain bursts.
-- Deep-dive on frequent arbitragers (e.g., address `0x43f9a7aec2a683c4cd6016f92ff76d5f3e7b44d3`): report gap distributions, tick movements, signed volume, scatter plots, and descriptive stats.
+1. Analyze the BSC vs. Base pool spread paths first, flagging any trace where `|spread_pct| > 0.05%` along with counts and sample trades.
+2. Sort swaps chronologically across chains, continuously align each trade with the latest price from the opposite chain via `pd.merge_asof(direction="backward")`, and mark trades whose price vs. reference exceeds the 0.05% threshold in the arbitrage direction.
+3. Build competitor/arb-sender leaderboards from the flagged `is_arb_trade` rows (volume, `net_profit`, spread statistics, etc.).
+4. Bucket arbitrage trades into 10-second windows, require both chains to contribute opposite-sided volume, and compute symmetry, high-spread groups, and net-flow metrics.
+5. Deep-dive on a specific wallet (`0x43f9a7aec2a683c4cd6016f92ff76d5f3e7b44d3`): enumerate Base trades, compare BSC reference prices, track tick movements, and evaluate whether flipping the signal on the opposite chain would have been profitable.
 
 ### Generated Visuals (`insights/view/`)
 

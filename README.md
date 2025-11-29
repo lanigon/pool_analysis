@@ -32,6 +32,7 @@ This project studies real-world arbitrage activity between PancakeSwap V3 on BSC
 5. Deep-dive on a specific wallet (`0x43f9a7aec2a683c4cd6016f92ff76d5f3e7b44d3`): enumerate Base trades, compare BSC reference prices, track tick movements, and evaluate whether flipping the signal on the opposite chain would have been profitable.
 6. Trace “strict” cross-chain windows that satisfy opposite-side spread constraints on both chains; the current log covers ~1.5 days, yields 10 matched buckets (~1.9% of 10s windows), and highlights three balanced events with nearly $2.1k total net profit despite ETH symmetry ratios near 0.93–1.00.
 7. Counted 25,715 high-spread trades (>0.05%) split roughly 13.7k on Base and 12.0k on BSC, removed 19 rows with the anomalous `2954.226369` price, and documented that 139/399 (34.8%) of `0x43f9a7a…` Base trades would have been profitable if reversed on BSC shortly thereafter (avg. next BSC return ≈−0.11%).
+8. Added a buffered cross-chain pair matcher (60s window) that exposed 3,427 dual-chain matches, keeps track of per-side gas/volume/price, reports a mean net profit of ~$2.43 (total ≈$8.3k), documents price ranges (~2,985–2,986 USD) and correlations (gas vs. volume ≈0.84, gas vs. profit ≈0.65), and prints the top 20 most profitable pairs (with time differences, windows, prices, and amounts).
 
 ### Generated Visuals (`insights/view/`)
 
@@ -41,10 +42,9 @@ This project studies real-world arbitrage activity between PancakeSwap V3 on BSC
 
 ## What We Learned
 
-- BSC/Base spreads exist but decay rapidly—typically ~10 seconds before arbitrage collapses the gap.
-- Some wallets act like market makers, firing continuously when spreads appear; even with tiny tick impacts per trade, they maintain balanced signed volume as gaps emerge.
-- Cross-chain match windows are rare (~2% of 10-second buckets), so most opportunities either disappear before both chains can trade or are too slim to cover gas.
-- Strict cross-chain groups with directional spreads are vanishingly rare: only three windows pass all filters in the log sample, yet they still produce ≈$2,100 in aggregate net profit with tight ETH volume symmetry.
+- BSC/Base spreads exist but tend to decay within ~10 seconds unless multiple traders step in; many windowed spreads are never part of a dual-chain pair, yet any persistent spread still creates a short-lived group of actionable swaps.
+- Some wallets behave like market makers, continuously responding to spread signals with nearly balanced signed volume and tiny tick impacts—these actors dominate the competitor/arb-sender leaderboards and produce most of the measurable volume.
+- Buffering `is_arb_trade` flows for 60s reveals 3,427 cross-chain matches, each recording both sides’ gas, volume, price, and timing. These pairs average ~$2.43 of net profit (≈$8.3k total), show tight price ranges near $2,985–2,986, and exhibit strong correlations between gas/volume (0.84) and gas/profit (0.65), highlighting how liquidity-heavy flows consume more gas yet also make more money.
 
 ## Why This Matters
 

@@ -25,9 +25,17 @@ except ImportError:
     from utils.tx_group import chain_for_dex, normalize_to_decimal
 
 try:
-    from insights.arbitrage_analysis import same_timestamp_gas_priority
+    from insights.arbitrage_analysis import (
+        same_timestamp_gas_priority,
+        load_transactions,
+        analyze_arbitrage_trades,
+    )
 except ImportError:
-    from arbitrage_analysis import same_timestamp_gas_priority
+    from arbitrage_analysis import (
+        same_timestamp_gas_priority,
+        load_transactions,
+        analyze_arbitrage_trades,
+    )
 
 DATA_DIR = Path(__file__).resolve().parents[1] / "data"
 TRANSACTIONS_DB_PATH = DATA_DIR / "transactions.db"
@@ -135,6 +143,184 @@ def print_top_senders(
         )
 
 
+def pair_cross_chain_actions(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Match every arb trade on one chain with an opposite-side arb trade on the other chain,
+    without relying on fixed time buckets.
+    """
+    arb = df[df["is_arb_trade"]].sort_values(
+        ["timestamp", "block_number", "log_index"], ascending=True
+    )
+    if arb.empty:
+        return pd.DataFrame()
+
+    opposite = {
+        ("bsc", "sell"): ("base", "buy"),
+        ("base", "buy"): ("bsc", "sell"),
+        ("base", "sell"): ("bsc", "buy"),
+        ("bsc", "buy"): ("base", "sell"),
+    }
+    pending: dict[tuple[str, str], list[dict[str, object]]] = {
+        key: [] for key in opposite
+    }
+    consecutive_count: dict[tuple[str, str], int] = defaultdict(int)
+    groups: list[dict[str, object]] = []
+
+    for _, row in arb.iterrows():
+        chain_side = (row["chain"], row["side"])
+        if chain_side not in opposite:
+            continue
+        opp_side = opposite[chain_side]
+        current_row = row.to_dict()
+
+        if pending[opp_side]:
+            best_idx = max(
+                range(len(pending[opp_side])),
+                key=lambda idx: abs(pending[opp_side][idx]["row"]["volume_usd"]),
+            )
+            candidate = pending[opp_side].pop(best_idx)
+            candidate_row = candidate["row"]
+            current_sequence = consecutive_count[chain_side] + 1
+
+            time_diff = abs(current_row["timestamp"] - candidate_row["timestamp"])
+            vol_a = abs(candidate_row["volume_usd"])
+            vol_b = abs(current_row["volume_usd"])
+            total_net_profit = candidate_row["net_profit"] + current_row["net_profit"]
+            max_vol = max(vol_a, vol_b)
+            volume_ratio = min(vol_a, vol_b) / max_vol if max_vol > 0 else 0.0
+
+            groups.append(
+                {
+                    "pair_id": len(groups) + 1,
+                    "pair_type": f"{candidate_row['chain']}_{candidate_row['side']} -> "
+                    f"{current_row['chain']}_{current_row['side']}",
+                    "chain_a": candidate_row["chain"],
+                    "side_a": candidate_row["side"],
+                    "timestamp_a": candidate_row["timestamp"],
+                    "tx_hash_a": candidate_row.get("tx_hash"),
+                    "volume_a": float(vol_a),
+                    "spread_a": float(candidate_row.get("spread_pct", 0.0) or 0.0),
+                    "net_profit_a": float(candidate_row.get("net_profit", 0.0) or 0.0),
+                    "chain_b": current_row["chain"],
+                    "side_b": current_row["side"],
+                    "timestamp_b": current_row["timestamp"],
+                    "tx_hash_b": current_row.get("tx_hash"),
+                    "volume_b": float(vol_b),
+                    "spread_b": float(current_row.get("spread_pct", 0.0) or 0.0),
+                    "net_profit_b": float(current_row.get("net_profit", 0.0) or 0.0),
+                    "time_diff": float(time_diff),
+                    "volume_ratio": float(volume_ratio),
+                    "total_net_profit": float(total_net_profit),
+                    "consecutive_a": int(candidate["consecutive_count"]),
+                    "consecutive_b": int(current_sequence),
+                }
+            )
+
+            consecutive_count[opp_side] = len(pending[opp_side])
+            consecutive_count[chain_side] = len(pending[chain_side])
+        else:
+            consecutive_count[chain_side] += 1
+            pending[chain_side].append(
+                {"row": current_row, "consecutive_count": consecutive_count[chain_side]}
+            )
+
+    if not groups:
+        return pd.DataFrame()
+
+    result = pd.DataFrame(groups)
+    return result.sort_values("time_diff").reset_index(drop=True)
+
+
+def buffered_cross_chain_pairs(
+    df: pd.DataFrame, buffer_seconds: int = 60, threshold: float = 0.0005
+) -> pd.DataFrame:
+    """Match trades with opposite flow within a rolling 60s buffer."""
+    arb = df[df["is_arb_trade"]].sort_values(
+        ["timestamp", "block_number", "log_index"], ascending=True
+    )
+    if arb.empty:
+        return pd.DataFrame()
+
+    opposite = {
+        ("bsc", "sell"): ("base", "buy"),
+        ("base", "buy"): ("bsc", "sell"),
+        ("base", "sell"): ("bsc", "buy"),
+        ("bsc", "buy"): ("base", "sell"),
+    }
+    pending: dict[tuple[str, str], list[dict[str, object]]] = defaultdict(list)
+    streaks: defaultdict[tuple[str, str], int] = defaultdict(int)
+    matches: list[dict[str, object]] = []
+
+    for _, row in arb.iterrows():
+        chain_side = (row["chain"], row["side"])
+        if abs(row["spread_pct"]) <= threshold:
+            continue
+        now = row["timestamp"]
+
+        # expire stale candidates
+        for key in list(pending.keys()):
+            pending[key] = [
+                entry
+                for entry in pending[key]
+                if now - entry["row"]["timestamp"] <= buffer_seconds
+            ]
+        opp = opposite.get(chain_side)
+        if not opp:
+            continue
+
+        if pending[opp]:
+            best_idx = max(
+                range(len(pending[opp])),
+                key=lambda idx: abs(pending[opp][idx]["row"]["volume_usd"]),
+            )
+            candidate = pending[opp].pop(best_idx)
+            candidate_row = candidate["row"]
+            consecutive_a = candidate["consecutive"]
+            consecutive_b = streaks[chain_side] + 1
+
+            vol_a = abs(candidate_row["volume_usd"])
+            vol_b = abs(row["volume_usd"])
+            total_net_profit = candidate_row["net_profit"] + row["net_profit"]
+            time_diff = abs(candidate_row["timestamp"] - now)
+            max_vol = max(vol_a, vol_b)
+            volume_ratio = min(vol_a, vol_b) / max_vol if max_vol > 0 else 0.0
+
+            matches.append(
+                {
+                    "pair_id": len(matches) + 1,
+                    "chain_a": candidate_row["chain"],
+                    "side_a": candidate_row["side"],
+                    "timestamp_a": candidate_row["timestamp"],
+                    "volume_a": float(vol_a),
+                    "spread_a": float(candidate_row.get("spread_pct", 0.0) or 0.0),
+                    "net_profit_a": float(candidate_row.get("net_profit", 0.0) or 0.0),
+                    "chain_b": row["chain"],
+                    "side_b": row["side"],
+                    "timestamp_b": now,
+                    "volume_b": float(vol_b),
+                    "spread_b": float(row.get("spread_pct", 0.0) or 0.0),
+                    "net_profit_b": float(row.get("net_profit", 0.0) or 0.0),
+                    "time_diff": float(time_diff),
+                    "volume_ratio": float(volume_ratio),
+                    "total_net_profit": float(total_net_profit),
+                    "consecutive_a": int(consecutive_a),
+                    "consecutive_b": int(consecutive_b),
+                }
+            )
+            streaks[opp] = len(pending[opp])
+            streaks[chain_side] = 0
+        else:
+            streaks[chain_side] += 1
+            pending[chain_side].append(
+                {"row": row.to_dict(), "consecutive": streaks[chain_side]}
+            )
+
+    if not matches:
+        return pd.DataFrame()
+
+    return pd.DataFrame(matches).sort_values("time_diff").reset_index(drop=True)
+
+
 def main() -> None:
     session = create_sqlite_session(TRANSACTIONS_DB_PATH)
     all_records = read_all_transactions(session)
@@ -148,6 +334,47 @@ def main() -> None:
     records_df = pd.DataFrame([asdict(r) for r in base_records])
     ratio = same_timestamp_gas_priority(records_df)
     print(f"\nAnalysis E – Same-timestamp gas priority ratio: {ratio:.2%}")
+
+    full_df = load_transactions(TRANSACTIONS_DB_PATH)
+    arb_df = analyze_arbitrage_trades(full_df)
+    pair_df = pair_cross_chain_actions(arb_df)
+    print(f"\nCross-chain pair matches (no window): {len(pair_df)}")
+    if not pair_df.empty:
+        to_print = pair_df[
+            [
+                "pair_type",
+                "chain_a",
+                "side_a",
+                "chain_b",
+                "side_b",
+                "time_diff",
+                "volume_ratio",
+                "total_net_profit",
+            ]
+        ]
+        print(to_print.head(10).to_string(index=False, float_format="{:,.4f}".format))
+        print("\nTime diff stats (seconds):")
+        print(pair_df["time_diff"].describe().to_string(float_format="{:,.2f}".format))
+        print("\nVolume ratio stats:")
+        print(pair_df["volume_ratio"].describe().to_string(float_format="{:,.4f}".format))
+
+    buffer_df = buffered_cross_chain_pairs(arb_df)
+    print(f"\nBuffered cross-chain pairs (60s): {len(buffer_df)}")
+    if not buffer_df.empty:
+        cols = [
+            "chain_a",
+            "side_a",
+            "chain_b",
+            "side_b",
+            "time_diff",
+            "volume_ratio",
+            "total_net_profit",
+        ]
+        print(buffer_df[cols].head(10).to_string(index=False, float_format="{:,.4f}".format))
+        print("\nBuffered time diff stats (seconds):")
+        print(buffer_df["time_diff"].describe().to_string(float_format="{:,.2f}".format))
+        print("\nBuffered volume ratio stats:")
+        print(buffer_df["volume_ratio"].describe().to_string(float_format="{:,.4f}".format))
 
 
 if __name__ == "__main__":

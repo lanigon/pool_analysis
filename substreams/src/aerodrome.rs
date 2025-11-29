@@ -99,10 +99,18 @@ fn extract_pre_swap_state(block: &eth::Block, swap: &RawSwap) -> (String, String
         return default();
     };
 
-    let slot_price_tick =
-        find_storage_change(trx, pool_address.as_slice(), &SLOT_PRICE_TICK_KEY, swap.ordinal);
-    let slot_liquidity =
-        find_storage_change(trx, pool_address.as_slice(), &SLOT_LIQUIDITY_KEY, swap.ordinal);
+    let slot_price_tick = find_storage_change(
+        trx,
+        pool_address.as_slice(),
+        &SLOT_PRICE_TICK_KEY,
+        swap.ordinal,
+    );
+    let slot_liquidity = find_storage_change(
+        trx,
+        pool_address.as_slice(),
+        &SLOT_LIQUIDITY_KEY,
+        swap.ordinal,
+    );
 
     let mut pre_tick = swap.tick;
     let mut pre_sqrt = swap.sqrt_price_x96.clone();
@@ -135,8 +143,7 @@ fn find_storage_change<'a>(
     // DEBUG helper: log the keys we see when we cannot find a match.
     let target_hex = hex::encode(address);
     let key_hex = hex::encode(key);
-    let debug_mode =
-        key_hex == "0000000000000000000000000000000000000000000000000000000000000000";
+    let debug_mode = key_hex == "0000000000000000000000000000000000000000000000000000000000000000";
 
     let mut found = None;
     let mut best_ordinal = 0;

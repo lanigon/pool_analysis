@@ -4,7 +4,7 @@ chain  trades  mean_spread  median_spread  positive_spreads  negative_spreads  p
  base   63792       0.0003         0.0001             33477             23170          0.5248
   bsc   38107      -0.0003        -0.0001             15185             22922          0.3985
 
-High-spread trades (>5%): 25715 total
+High-spread trades (>0.05%): 25715 total
 chain  large_spread_trades
  base                13666
   bsc                12049

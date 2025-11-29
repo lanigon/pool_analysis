@@ -1,11 +1,14 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use lindenshore_substreams::db_conn::{
-    ChainInput, DbConnManager, DexContractInput, PoolInput, TransactionInput,
+    ChainInput, DbConnManager, DexContractInput, MAIN_DB_PATH, PoolInput, TransactionInput,
 };
 
 #[derive(Parser, Debug)]
-#[command(name = "initial_db", about = "Seed or reset the data/*.db SQLite files")]
+#[command(
+    name = "initial_db",
+    about = "Seed or reset the single data/lindenshore.db SQLite file"
+)]
 struct Args {
     /// Insert sample data
     #[arg(long, default_value_t = false)]
@@ -21,9 +24,9 @@ async fn main() -> Result<()> {
 
     let manager = DbConnManager::new()
         .await
-        .context("failed to initialize SQLite databases")?;
+        .context("failed to initialize SQLite database")?;
 
-    println!("SQLite databases initialized under data/*.db");
+    println!("SQLite database initialized at {MAIN_DB_PATH}");
 
     if args.reset {
         clear_all_tables(&manager).await?;

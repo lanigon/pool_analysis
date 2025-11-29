@@ -39,7 +39,7 @@ struct RunArgs {
     /// Chain (required when --target is omitted)
     #[arg(long)]
     chain: Option<String>,
-    /// Pool addresses (repeatable/comma separated); falls back to pools.db when omitted
+    /// Pool addresses (repeatable/comma separated); falls back to data/lindenshore.db when omitted
     #[arg(long = "pool", alias = "pools", value_delimiter = ',')]
     pools: Vec<String>,
     /// Path to the substreams CLI binary
@@ -204,9 +204,7 @@ async fn auto_run() -> Result<()> {
     }
 
     if !ran_any {
-        println!(
-            "No PancakeSwap or Aerodrome pools found locally; running both by default"
-        );
+        println!("No PancakeSwap or Aerodrome pools found locally; running both by default");
         let pancake_args = pancake_demo_args();
         run_substreams(&pancake_args).await?;
         let aerodrome_args = aerodrome_demo_args();
@@ -260,7 +258,11 @@ async fn run_substreams(args: &RunArgs) -> Result<()> {
     }
 
     println!("Target DEX: {} | Chain: {}", spec.db_name, chain_name);
-    println!("Pool count: {} | addresses: {}", pools.len(), pools.join(","));
+    println!(
+        "Pool count: {} | addresses: {}",
+        pools.len(),
+        pools.join(",")
+    );
 
     let params = format!("{}={}", spec.param_module, pools.join(","));
 
@@ -395,9 +397,7 @@ fn resolve_module(dex: &str, chain: &str) -> Result<ModuleSpec> {
             }
         }
         _ => {
-            return Err(anyhow!(
-                "Unsupported dex={dex} chain={chain} combination"
-            ));
+            return Err(anyhow!("Unsupported dex={dex} chain={chain} combination"));
         }
     };
 

@@ -30,6 +30,8 @@ This project studies real-world arbitrage activity between PancakeSwap V3 on BSC
 3. Build competitor/arb-sender leaderboards from the flagged `is_arb_trade` rows (volume, `net_profit`, spread statistics, etc.).
 4. Bucket arbitrage trades into 10-second windows, require both chains to contribute opposite-sided volume, and compute symmetry, high-spread groups, and net-flow metrics.
 5. Deep-dive on a specific wallet (`0x43f9a7aec2a683c4cd6016f92ff76d5f3e7b44d3`): enumerate Base trades, compare BSC reference prices, track tick movements, and evaluate whether flipping the signal on the opposite chain would have been profitable.
+6. Trace “strict” cross-chain windows that satisfy opposite-side spread constraints on both chains; the current log covers ~1.5 days, yields 10 matched buckets (~1.9% of 10s windows), and highlights three balanced events with nearly $2.1k total net profit despite ETH symmetry ratios near 0.93–1.00.
+7. Counted 25,715 high-spread trades (>0.05%) split roughly 13.7k on Base and 12.0k on BSC, removed 19 rows with the anomalous `2954.226369` price, and documented that 139/399 (34.8%) of `0x43f9a7a…` Base trades would have been profitable if reversed on BSC shortly thereafter (avg. next BSC return ≈−0.11%).
 
 ### Generated Visuals (`insights/view/`)
 
@@ -42,10 +44,12 @@ This project studies real-world arbitrage activity between PancakeSwap V3 on BSC
 - BSC/Base spreads exist but decay rapidly—typically ~10 seconds before arbitrage collapses the gap.
 - Some wallets act like market makers, firing continuously when spreads appear; even with tiny tick impacts per trade, they maintain balanced signed volume as gaps emerge.
 - Cross-chain match windows are rare (~2% of 10-second buckets), so most opportunities either disappear before both chains can trade or are too slim to cover gas.
+- Strict cross-chain groups with directional spreads are vanishingly rare: only three windows pass all filters in the log sample, yet they still produce ≈$2,100 in aggregate net profit with tight ETH volume symmetry.
 
 ## Why This Matters
 
 - These traces offer first-hand evidence of cross-chain price formation, reversion speed, arbitrage costs (swap + gas), and market-making behavior.
 - The data underpins real-time arbitrage monitors or MEV bot research (price prediction, liquidity readiness).
+- The expanding log also provides a practical benchmark: 25,715 high-spread ticks, a 1.90% cross-chain match ratio, just four meaningful competitors, and 139 clearly profitable reverse-BSC opportunities for the studied sender help quantify both the scarcity and the tangible upside of disciplined cross-chain flow matching.
 - The same workflow can be extended to new assets/chains or combined with MEV relay/Flashbots quotes to study priority and profitability.
 

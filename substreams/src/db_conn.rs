@@ -6,37 +6,23 @@ use sea_orm::{
     Schema, Set, Statement,
 };
 
-const DEX_DB_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../data/dex.db");
-const CHAINS_DB_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../data/chains.db");
-const POOLS_DB_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../data/pools.db");
-const TRANSACTIONS_DB_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../data/transactions.db");
+pub const MAIN_DB_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../data/lindenshore.db");
 
 #[derive(Clone)]
 pub struct DbConnManager {
-    dex_db: DatabaseConnection,
-    chain_db: DatabaseConnection,
-    pools_db: DatabaseConnection,
-    transactions_db: DatabaseConnection,
+    db: DatabaseConnection,
 }
 
 impl DbConnManager {
     pub async fn new() -> Result<Self> {
-        let dex_db = connect_sqlite(DEX_DB_PATH).await?;
-        let chain_db = connect_sqlite(CHAINS_DB_PATH).await?;
-        let pools_db = connect_sqlite(POOLS_DB_PATH).await?;
-        let transactions_db = connect_sqlite(TRANSACTIONS_DB_PATH).await?;
+        let db = connect_sqlite(MAIN_DB_PATH).await?;
 
-        init_dex_schema(&dex_db).await?;
-        init_chain_schema(&chain_db).await?;
-        init_pools_schema(&pools_db).await?;
-        init_transactions_schema(&transactions_db).await?;
+        init_dex_schema(&db).await?;
+        init_chain_schema(&db).await?;
+        init_pools_schema(&db).await?;
+        init_transactions_schema(&db).await?;
 
-        Ok(Self {
-            dex_db,
-            chain_db,
-            pools_db,
-            transactions_db,
-        })
+        Ok(Self { db })
     }
 
     pub async fn add_dex_contract(&self, input: DexContractInput) -> Result<dex_metadata::Model> {
@@ -49,7 +35,7 @@ impl DbConnManager {
         };
 
         active_model
-            .insert(&self.dex_db)
+            .insert(&self.db)
             .await
             .context("failed to add dex contract")
     }
@@ -63,7 +49,7 @@ impl DbConnManager {
         };
 
         active_model
-            .insert(&self.chain_db)
+            .insert(&self.db)
             .await
             .context("failed to add chain metadata")
     }
@@ -80,7 +66,7 @@ impl DbConnManager {
         };
 
         active_model
-            .insert(&self.pools_db)
+            .insert(&self.db)
             .await
             .context("failed to add pool metadata")
     }
@@ -107,28 +93,28 @@ impl DbConnManager {
         };
 
         active_model
-            .insert(&self.transactions_db)
+            .insert(&self.db)
             .await
             .context("failed to add transaction record")
     }
 
     pub async fn list_dex_contracts(&self) -> Result<Vec<dex_metadata::Model>> {
         dex_metadata::Entity::find()
-            .all(&self.dex_db)
+            .all(&self.db)
             .await
             .context("failed to list dex contracts")
     }
 
     pub async fn list_chains(&self) -> Result<Vec<chains::Model>> {
         chains::Entity::find()
-            .all(&self.chain_db)
+            .all(&self.db)
             .await
             .context("failed to list chains")
     }
 
     pub async fn list_pools(&self) -> Result<Vec<pools::Model>> {
         pools::Entity::find()
-            .all(&self.pools_db)
+            .all(&self.db)
             .await
             .context("failed to list pools")
     }
@@ -136,7 +122,7 @@ impl DbConnManager {
     pub async fn list_pools_by_dex(&self, dex_name: &str) -> Result<Vec<pools::Model>> {
         pools::Entity::find()
             .filter(pools::Column::DexName.eq(dex_name))
-            .all(&self.pools_db)
+            .all(&self.db)
             .await
             .context("failed to list pools for dex")
     }
@@ -144,7 +130,7 @@ impl DbConnManager {
     pub async fn list_transactions(&self) -> Result<Vec<transactions::Model>> {
         transactions::Entity::find()
             .order_by_asc(transactions::Column::Timestamp)
-            .all(&self.transactions_db)
+            .all(&self.db)
             .await
             .context("failed to list transactions")
     }
@@ -155,7 +141,7 @@ impl DbConnManager {
     ) -> Result<Option<dex_metadata::Model>> {
         dex_metadata::Entity::find()
             .filter(dex_metadata::Column::ContractAddress.eq(address))
-            .one(&self.dex_db)
+            .one(&self.db)
             .await
             .context("failed to fetch dex contract")
     }
@@ -163,7 +149,7 @@ impl DbConnManager {
     pub async fn find_chain_by_id(&self, chain_id: &str) -> Result<Option<chains::Model>> {
         chains::Entity::find()
             .filter(chains::Column::ChainId.eq(chain_id))
-            .one(&self.chain_db)
+            .one(&self.db)
             .await
             .context("failed to fetch chain metadata")
     }
@@ -171,7 +157,7 @@ impl DbConnManager {
     pub async fn find_pool_by_address(&self, address: &str) -> Result<Option<pools::Model>> {
         pools::Entity::find()
             .filter(pools::Column::PoolAddress.eq(address))
-            .one(&self.pools_db)
+            .one(&self.db)
             .await
             .context("failed to fetch pool metadata")
     }
@@ -182,14 +168,14 @@ impl DbConnManager {
     ) -> Result<Option<transactions::Model>> {
         transactions::Entity::find()
             .filter(transactions::Column::TxHash.eq(tx_hash))
-            .one(&self.transactions_db)
+            .one(&self.db)
             .await
             .context("failed to fetch transaction")
     }
 
     pub async fn drop_all_transactions(&self) -> Result<()> {
         transactions::Entity::delete_many()
-            .exec(&self.transactions_db)
+            .exec(&self.db)
             .await
             .context("failed to truncate transactions")?;
         Ok(())
@@ -197,7 +183,7 @@ impl DbConnManager {
 
     pub async fn drop_all_pools(&self) -> Result<()> {
         pools::Entity::delete_many()
-            .exec(&self.pools_db)
+            .exec(&self.db)
             .await
             .context("failed to truncate pools")?;
         Ok(())
@@ -205,7 +191,7 @@ impl DbConnManager {
 
     pub async fn drop_all_dex_contracts(&self) -> Result<()> {
         dex_metadata::Entity::delete_many()
-            .exec(&self.dex_db)
+            .exec(&self.db)
             .await
             .context("failed to truncate dex metadata")?;
         Ok(())
@@ -213,7 +199,7 @@ impl DbConnManager {
 
     pub async fn drop_all_chains(&self) -> Result<()> {
         chains::Entity::delete_many()
-            .exec(&self.chain_db)
+            .exec(&self.db)
             .await
             .context("failed to truncate chains")?;
         Ok(())

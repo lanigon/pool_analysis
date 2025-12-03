@@ -304,25 +304,31 @@ def analyze_pool_spread(df: pd.DataFrame) -> pd.DataFrame:
     )
     print("\nPool price spread overview:")
     print(summary.to_string(index=False, float_format="{:.4f}".format))
-    high_spread = spread_df[spread_df["spread_pct"].abs() > 0.0005]
-    if not high_spread.empty:
-        chain_counts = high_spread.groupby("chain")["tx_hash"].count().rename("large_spread_trades")
-        by_chain = chain_counts.reset_index()
-        print(f"\nHigh-spread trades (>0.05%): {len(high_spread)} total")
+    def _print_threshold_stats(threshold: float) -> None:
+        matched = spread_df[spread_df["spread_pct"].abs() > threshold]
+        if matched.empty:
+            return
+        counts = matched.groupby("chain")["tx_hash"].count().rename("large_spread_trades").reset_index()
+        print(f"\nHigh-spread trades (>{threshold*100:.2f}%): {len(matched)} total")
         print(
-            by_chain.to_string(
+            counts.to_string(
                 index=False,
                 float_format="{:,.0f}".format,
             )
         )
-        print("\nSample high-spread trades:")
-        print(
-            high_spread[
-                ["timestamp", "chain", "tx_hash", "price", "ref_price", "spread_pct"]
-            ]
-            .head(5)
-            .to_string(index=False, float_format="{:,.4f}".format)
-        )
+        if threshold == 0.0005:
+            print("\nSample high-spread trades:")
+            print(
+                matched[
+                    ["timestamp", "chain", "tx_hash", "price", "ref_price", "spread_pct"]
+                ]
+                .head(5)
+                .to_string(index=False, float_format="{:,.4f}".format)
+            )
+
+    _print_threshold_stats(0.0005)
+    _print_threshold_stats(0.001)
+    _print_threshold_stats(0.002)
     return summary
 
 
@@ -429,10 +435,21 @@ def build_cross_chain_pairs(
             continue
 
         if pending[opp]:
-            best_idx = max(
-                range(len(pending[opp])),
-                key=lambda idx: abs(pending[opp][idx]["row"]["volume_usd"]),
-            )
+            vol_b = abs(float(row.get("volume_usd", 0.0) or 0.0))
+            def _match_score(idx: int) -> tuple[float, float, float]:
+                candidate = pending[opp][idx]["row"]
+                cand_volume = abs(float(candidate.get("volume_usd", 0.0) or 0.0))
+                cand_timestamp = candidate.get("timestamp", now)
+                time_diff = abs(now - cand_timestamp)
+                if cand_volume > 0 and vol_b > 0:
+                    vol_ratio = min(cand_volume, vol_b) / max(cand_volume, vol_b)
+                else:
+                    vol_ratio = 0.0
+                cand_spread = float(candidate.get("spread_pct", 0.0) or 0.0)
+                spread_score = abs(cand_spread)
+                # Higher tuple values mean better match: prioritize smaller time_diff, then closer volume ratio, then spread
+                return (-time_diff, vol_ratio, spread_score)
+            best_idx = max(range(len(pending[opp])), key=_match_score)
             candidate = pending[opp].pop(best_idx)
             candidate_row = candidate["row"]
             consecutive_a = candidate["consecutive"]
@@ -444,6 +461,33 @@ def build_cross_chain_pairs(
             time_diff = abs(candidate_row["timestamp"] - now)
             max_vol = max(vol_a, vol_b)
             volume_ratio = min(vol_a, vol_b) / max_vol if max_vol > 0 else 0.0
+            amount1_a = float(candidate_row.get("amount1_decimal", 0.0) or 0.0)
+            amount1_b = float(row.get("amount1_decimal", 0.0) or 0.0)
+            signed_stable_a = vol_a * float(np.sign(amount1_a))
+            signed_stable_b = vol_b * float(np.sign(amount1_b))
+            stable_delta_usd = signed_stable_a + signed_stable_b
+            amount0_a = float(candidate_row.get("amount0_decimal", 0.0) or 0.0)
+            amount0_b = float(row.get("amount0_decimal", 0.0) or 0.0)
+            eth_delta = amount0_a + amount0_b
+            price_a = float(candidate_row.get("price", 0.0) or 0.0)
+            price_b = float(row.get("price", 0.0) or 0.0)
+            ref_price_a = float(candidate_row.get("ref_price", price_a) or price_a)
+            ref_price_b = float(row.get("ref_price", price_b) or price_b)
+            market_price = float(
+                np.nanmean(
+                    [
+                        ref_price_a if ref_price_a > 0 else price_a,
+                        ref_price_b if ref_price_b > 0 else price_b,
+                    ]
+                )
+            )
+            if not np.isfinite(market_price) or market_price == 0.0:
+                market_price = max(price_a, price_b, 0.0)
+            eth_delta_usd = eth_delta * market_price
+            gas_a = float(candidate_row.get("gas_fee_usd", 0.0) or 0.0)
+            gas_b = float(row.get("gas_fee_usd", 0.0) or 0.0)
+            gas_total = gas_a + gas_b
+            total_net_profit = stable_delta_usd + eth_delta_usd - gas_total
 
             matches.append(
                 {
@@ -480,6 +524,12 @@ def build_cross_chain_pairs(
                     "sender_b": row.get("sender_address"),
                     "consecutive_a": int(consecutive_a),
                     "consecutive_b": int(consecutive_b),
+                    "stable_delta_usd": stable_delta_usd,
+                    "eth_delta": eth_delta,
+                    "eth_delta_usd": eth_delta_usd,
+                    "market_price": market_price,
+                    "gas_fee_total": gas_total,
+                    "pair_profit_usd": total_net_profit,
                 }
             )
             streaks[opp] = len(pending[opp])
@@ -835,7 +885,31 @@ def main() -> None:
     print("\n=== Cross-chain trading group analysis ===")
     pair_df = build_cross_chain_pairs(analyzed)
     print(f"Buffered cross-chain pairs (60s buffer, spread ≥ 0.05%): {len(pair_df)} matches")
-    if not pair_df.empty:
+    filtered_pairs = pair_df[pair_df["volume_ratio"] >= 0.8]
+    kept = len(filtered_pairs)
+    print(f"Kept {kept} matches with volume_ratio >= 0.8.")
+    if filtered_pairs.empty:
+        print("No cross-chain pairs with volume_ratio >= 0.8.")
+        return
+
+    if not filtered_pairs.empty:
+        print(
+            "\nFiltered matches (ratio >= 0.8):"
+            " pair_id time_diff volume_ratio total_net_profit"
+        )
+        print(
+            filtered_pairs[
+                ["pair_id", "time_diff", "volume_ratio", "total_net_profit"]
+            ]
+            .to_string(index=False, float_format="{:.4f}".format)
+        )
+        total_profit = filtered_pairs["total_net_profit"].sum()
+        positive_pairs = filtered_pairs[filtered_pairs["total_net_profit"] > 0]
+        negative_pairs = filtered_pairs[filtered_pairs["total_net_profit"] <= 0]
+        positive_profit = positive_pairs["total_net_profit"].sum()
+        print(f"Total profit across filtered matches: ${total_profit:,.2f}")
+        print(f"Positive-match count: {len(positive_pairs)} (sum ${positive_profit:,.2f}); "
+              f"negative-match count: {len(negative_pairs)}")
         summary_cols = [
             "pair_type",
             "chain_a",
@@ -845,13 +919,15 @@ def main() -> None:
             "time_diff",
             "volume_ratio",
             "total_net_profit",
+            "stable_delta_usd",
+            "eth_delta_usd",
         ]
-        print(pair_df[summary_cols].head(10).to_string(index=False, float_format="{:,.4f}".format))
+        print(filtered_pairs[summary_cols].head(10).to_string(index=False, float_format="{:,.4f}".format))
         print("\nPaired time diff stats (seconds):")
         print(pair_df["time_diff"].describe().to_string(float_format="{:,.2f}".format))
         print("\nPaired volume ratio stats:")
         print(pair_df["volume_ratio"].describe().to_string(float_format="{:,.4f}".format))
-        net_profit_stats = pair_df["total_net_profit"]
+        net_profit_stats = filtered_pairs["total_net_profit"]
         net_profit_desc = net_profit_stats.describe(percentiles=[0.25, 0.5, 0.75])
         print(
             "\nPair net profit stats:"
@@ -863,8 +939,32 @@ def main() -> None:
             f" max {net_profit_desc['max']:.2f}"
             f" total {net_profit_stats.sum():,.2f}"
         )
+        stable_stats = filtered_pairs["stable_delta_usd"]
+        stable_desc = stable_stats.describe(percentiles=[0.25, 0.5, 0.75])
+        print(
+            "\nStable delta stats (USDT/USDC differences):"
+            f" mean {stable_desc['mean']:.2f}"
+            f" min {stable_desc['min']:.2f}"
+            f" 25% {stable_desc['25%']:.2f}"
+            f" median {stable_desc['50%']:.2f}"
+            f" 75% {stable_desc['75%']:.2f}"
+            f" max {stable_desc['max']:.2f}"
+            f" total {stable_stats.sum():,.2f}"
+        )
+        eth_stats = filtered_pairs["eth_delta_usd"]
+        eth_desc = eth_stats.describe(percentiles=[0.25, 0.5, 0.75])
+        print(
+            "\nNet ETH delta (USD) stats:"
+            f" mean {eth_desc['mean']:.2f}"
+            f" min {eth_desc['min']:.2f}"
+            f" 25% {eth_desc['25%']:.2f}"
+            f" median {eth_desc['50%']:.2f}"
+            f" 75% {eth_desc['75%']:.2f}"
+            f" max {eth_desc['max']:.2f}"
+            f" total {eth_stats.sum():,.2f}"
+        )
         top_pairs = (
-            pair_df.sort_values("total_net_profit", ascending=False)
+            filtered_pairs.sort_values("total_net_profit", ascending=False)
             .head(20)
             .reset_index(drop=True)
         )
@@ -876,12 +976,18 @@ def main() -> None:
             "chain_b",
             "side_b",
             "time_diff",
+            "tx_hash_a",
+            "tx_hash_b",
             "window",
             "price_a",
             "amount1_a",
             "price_b",
             "amount1_b",
             "total_net_profit",
+            "stable_delta_usd",
+            "eth_delta",
+            "eth_delta_usd",
+            "market_price",
         ]
         print("\nTop 20 cross-chain matches by total net profit:")
         print(
@@ -921,7 +1027,7 @@ def main() -> None:
         print(f"- gas vs volume: {corr.at['gas_fee_total','volume_usd_total']:.4f}")
         print(f"- gas vs profit: {corr.at['gas_fee_total','total_net_profit']:.4f}")
         sender_pairs = (
-            pair_df.groupby(["sender_a", "sender_b"])
+            filtered_pairs.groupby(["sender_a", "sender_b"])
             .agg(
                 matches=("pair_id", "count"),
                 total_net_profit=("total_net_profit", "sum"),
